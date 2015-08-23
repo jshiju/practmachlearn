@@ -1,5 +1,5 @@
 
-This the github repo for the 'Practical Machine Learning' course project.
+This is the github repo for the 'Practical Machine Learning' course project.
 
 **Project Title:**
 Predicting activity(exercise) quality from activity monitors using machine learning algorithm
