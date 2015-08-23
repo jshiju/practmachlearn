@@ -2,7 +2,7 @@
 title: "Predicting activity(exercise) quality from activity monitors using machine learning algorithm"
 author: "jshiju"
 date: "Saturday, August 22, 2015"
-output: html_document
+output: pdf_document
 ---
 
 ```{r, echo=FALSE}
