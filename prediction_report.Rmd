@@ -1,0 +1,182 @@
+---
+title: "Predicting activity(exercise) quality from activity monitors using machine learning algorithm"
+author: "jshiju"
+date: "Saturday, August 22, 2015"
+output: html_document
+---
+
+```{r, echo=FALSE}
+message(sprintf("Run time: %s\nR version: %s \nOS: %s %s", 
+   Sys.time(), R.Version()$version.string, Sys.info()['sysname'], Sys.info()['release']))
+```
+
+#### I. SYNOPSIS:
+
+The purpose of this project is to develop and build a model using machine learning techniques, based on the WLE(Weight Lifting Exercise) Dataset, to predict the manner in which an health participant performed an exercise on 20 different test cases with 'classe' as the ressponse variable.
+
+#### II. DATASET & DESCRIPTION:
+
+The WLE Dataset is available at http://groupware.les.inf.puc-rio.br/har and was collected from sensors(accelerometers) on the belt, forearm, arm, and dumbell of Six health participants) who were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+Training data :  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+Test data :  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+#### III. DATA PREPARATION
+
+Read training and test datasets from the source
+```{r, results='hide'}
+# read train data set
+require(data.table)
+setInternet2(TRUE)
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+pmlTrainData <- fread(url)
+
+# read test data set
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+pmlTestData <- fread(url)
+```
+
+#### IV. EDA & PREDICTOR IDENTIFICATION
+
+Perform an EDA(Exploratory Data Analsysis) on the data set.
+```{r}
+#summary(pmlTrainData)
+#describe(pmlTrainData)
+#sapply(pmlTrainData, class)
+#str(pmlTrainData)
+```
+A quick analysis on the test data set shows that we cannot take into all the variables for the prediction and need to identify those predictor variables which are relevant. We are interested in those variables prodcued by sensors with a Non-NA values. 
+
+Also subset the primary dataset to include only the predictor candidates and the outcome/response variable - 'classe'.
+```{r, results='hide'}
+# idenitify predictors
+isAnyMissing <- sapply(pmlTestData, function (x) any(is.na(x) | x == ""))
+isPredictor <- !isAnyMissing & grepl("belt|[^(fore)]arm|dumbbell|forearm", names(isAnyMissing))
+predCandidates <- names(isAnyMissing)[isPredictor]
+
+# subset primary dataset for predictor & outcome variables
+varToInclude <- c("classe", predCandidates)
+pmlTrainData <- pmlTrainData[, varToInclude, with=FALSE]
+```
+
+Perform the required Data Cleansing operations and split the dataset into training and probing dataset in the ratio 60:40.
+And a final look at the dataset attributes
+```{r}
+# classe as factor
+pmlTrainData <- pmlTrainData[, classe := factor(pmlTrainData[, classe])]
+dim(pmlTrainData)
+names(pmlTrainData)
+pmlTrainData[, .N, classe]
+```
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+# split dataset [60% - training; 40% - probing]
+require(caret)
+seed <- as.numeric(as.Date("2015-08-21"))
+set.seed(seed)
+inTrain <- createDataPartition(pmlTrainData$classe, p=0.6)
+trainData <- pmlTrainData[inTrain[[1]]]
+probeData <- pmlTrainData[-inTrain[[1]]]
+```
+
+The next step would be to estimate pre-processing transformation (centering, scaling etc) from the training data and applied to probe data set with the same variables. Also diagnose predictors for near zero variance. 
+
+```{r, results='hide'}
+# preprocess the prediction variables by centering and scaling.
+origData <- trainData[, predCandidates, with=FALSE]
+preProcessor <- preProcess(origData)
+tranformData <- predict(preProcessor, origData)
+DTrainCS <- data.table(data.frame(classe = trainData[, classe], tranformData))
+
+# apply the centering and scaling to the probing dataset.
+origData <- probeData[, predCandidates, with=FALSE]
+tranformData <- predict(preProcessor, origData)
+DProbeCS <- data.table(data.frame(classe = probeData[, classe], tranformData))
+
+# check for near zero variance.
+nzv <- nearZeroVar(DTrainCS, saveMetrics=TRUE)
+if (any(nzv$nzv)) nzv else message("No variables with near zero variance")
+```
+
+Examine groups of prediction variables and its replationship with response variable using plotting.
+
+```{r, warning=FALSE, message=FALSE}
+require(reshape2)
+require(ggplot2)
+
+histGroup <- function (data, regex) {
+  col <- grep(regex, names(data))
+  col <- c(col, which(names(data) == "classe"))
+  n <- nrow(data)
+  DMelted <- melt(data[, col, with=FALSE][, rownum := seq(1, n)], id.vars=c("rownum", "classe"))
+  
+  ggplot(DMelted, aes(x=classe, y=value)) +
+    geom_violin(aes(color=classe, fill=classe), alpha=1/2) +
+    facet_wrap(~ variable, scale="free_y") +
+    scale_color_brewer(palette="Spectral") +
+    scale_fill_brewer(palette="Spectral") +
+    labs(x="", y="") +
+    theme(legend.position="none")
+}
+
+histGroup(DTrainCS, "belt")
+histGroup(DTrainCS, "[^(fore)]arm")
+histGroup(DTrainCS, "dumbbell")
+histGroup(DTrainCS, "forearm")
+```
+
+#### V. FITTING A MODEL USING RANDOM FOREST
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+# set up the parallel clusters.
+require(parallel)
+require(doParallel)
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# set the control parameters.
+ctrl <- trainControl(classProbs=TRUE,
+                     savePredictions=TRUE,
+                     allowParallel=TRUE)
+
+#fit model (random forrest) over the tuning parameters.
+trainingModel <- train(classe ~ ., data=DTrainCS, method="rf")
+#system.time(trainingModel <- train(classe ~ ., data=DTrainCS, method="rf"))
+
+# stop the clusters.
+stopCluster(cl)
+```
+
+#### VI. OUT-OF SAMPLE ERROR & ERROR ESTIMATE
+
+To evaluate the model we will use the confusionmatrix method and we will focus on accuracy, sensitivity & specificity metrics.  As seen from the result of the confusionmatrix below, the model is good and efficient because it has an accuracy of 0.997 and very good sensitivity & specificity values on the testing dataset. (the lowest value is 0.992 for the sensitivity of the class C)
+
+**The estimated error rate is less than 1%.**
+
+```{r}
+# evaluate the model on the training dataset
+hat <- predict(trainingModel, DTrainCS)
+confusionMatrix(hat, trainData[, classe])
+
+# final model
+varImp(trainingModel)
+trainingModel$finalModel
+```
+
+
+```{r, results='hide'}
+# save training model
+save(trainingModel, file="trainingModel.RData")
+
+# Get predictions and evaluate.
+DTestCS <- predict(preProcessor, pmlTestData[, predCandidates, with=FALSE])
+hat <- predict(trainingModel, DTestCS)
+pmlTestData <- cbind(hat , pmlTestData)
+subset(pmlTestData, select=names(pmlTestData)[grep("belt|[^(fore)]arm|dumbbell|forearm", names(pmlTestData), invert=TRUE)])
+```
+
+#### VII. PREDICTION ON TEST SET
+And the final prediction on the 20 test cases are: 
+
+1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B
